@@ -2,7 +2,7 @@
 # DISCORD + SIGNAL PARSING LOGIC
 # =============================
 
-DISCORD_AUTH_TOKEN = 'MTAzMjk5ODk2Nzk4NzkzMzIzNQ.GQql8S.GBunu5Y9VxBgypoAS1ewOVSxNDO_bARaKIsEBU' #vunderloost
+DISCORD_AUTH_TOKEN = '00000000' #vunderloost
 CHANNEL_INFO = {
     'format_name': 'CommonParser',
     'channel_id': '1021379480503205898', #TEST SERVER
