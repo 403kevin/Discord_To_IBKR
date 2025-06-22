@@ -17,6 +17,8 @@ from pprint import pprint
 from decimal import Decimal
 from trailing_stop_manager import TrailingStopManager
 import threading
+from notification import send_telegram_message
+from datetime import datetime
 
 
 # =============================================================================================== #
