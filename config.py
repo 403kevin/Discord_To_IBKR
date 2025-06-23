@@ -124,3 +124,5 @@ EXIT_MINUTE = 0
 TELEGRAM_ENABLED    = True                      # master switch
 TELEGRAM_BOT_TOKEN  = "000"  
 TELEGRAM_CHAT_ID    = "-000"          # your channel or user ID
+
+Harden error handling around all external calls (IB, Discord HTTP, Telegram).
