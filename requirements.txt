@@ -4,3 +4,4 @@ polygon
 ib_insync
 colorama
 python-dateutil
+pytest
