@@ -122,5 +122,5 @@ EXIT_MINUTE = 0
 # TELEGRAM NOTIFICATIONS
 # =============================
 TELEGRAM_ENABLED    = True                      # master switch
-TELEGRAM_BOT_TOKEN  = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"  
-TELEGRAM_CHAT_ID    = "-1001234567890"          # your channel or user ID
+TELEGRAM_BOT_TOKEN  = "000"  
+TELEGRAM_CHAT_ID    = "-000"          # your channel or user ID
