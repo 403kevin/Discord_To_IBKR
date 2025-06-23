@@ -25,14 +25,12 @@ class IBInterface:
             • strike_price (float)
             • call_or_put ("C" or "P")
         """
-        # Case 1: parsed_symbol is a simple stock ticker string
         if not hasattr(parsed_symbol, "underlying_symbol"):
             contract = Stock(parsed_symbol, "SMART", "USD")
             self.ib.qualifyContracts(contract)
             logging.info(f"[CONTRACT] Qualified Stock: {contract.localSymbol}")
             return contract
 
-        # Case 2: parsed_symbol is an OptionSymbol-like object
         expiry_str = parsed_symbol.expiry.strftime("%Y%m%d")
         contract = Option(
             parsed_symbol.underlying_symbol,
@@ -42,8 +40,6 @@ class IBInterface:
             "SMART",
             currency="USD"
         )
-
-        # Special handling for SPX vs. SPXW
         if parsed_symbol.underlying_symbol.upper() == "SPX":
             contract = Option(
                 parsed_symbol.underlying_symbol,
@@ -54,7 +50,6 @@ class IBInterface:
                 currency="USD",
                 tradingClass="SPXW"
             )
-
         self.ib.qualifyContracts(contract)
         logging.info(f"[CONTRACT] Qualified Option: {contract.localSymbol}")
         return contract
@@ -72,18 +67,14 @@ class IBInterface:
 
         Returns:
             (price: float, contract: ib_insync.Contract)
-            • price = last / marketPrice() / midpoint; -1.0 if no valid data.
         """
         try:
-            # Ensure contract is qualified
             if not getattr(contract, "conId", None):
                 self.ib.qualifyContracts(contract)
 
             if use_snapshot:
                 ticker = self.ib.reqMktData(contract, "", False, True)
-                # Brief pause to allow IB to fill the snapshot
                 self.ib.sleep(0.5)
-
                 price = ticker.last if (ticker.last not in [None, 0.0]) else None
                 try:
                     self.ib.cancelMktData(contract)
@@ -93,13 +84,8 @@ class IBInterface:
                 ticker = self.ib.reqMktData(contract, "", False, False)
                 self.ib.sleep(timeout)
                 self.ib.cancelMktData(contract)
+                price = ticker.last if ticker.last and ticker.last not in [0.0] else ticker.marketPrice()
 
-                if ticker.last and (ticker.last not in [0.0]):
-                    price = ticker.last
-                else:
-                    price = ticker.marketPrice()
-
-            # Fallback to bid/ask midpoint if still invalid
             if price in [None, 0.0]:
                 if hasattr(ticker, "bid") and hasattr(ticker, "ask") and ticker.bid and ticker.ask:
                     price = (ticker.bid + ticker.ask) / 2
@@ -117,20 +103,111 @@ class IBInterface:
             logging.error(f"[PRICE EXC] failed for {getattr(contract, 'localSymbol', contract)}: {exc}")
             return -1.0, contract
 
+    def get_live_price(self, contract: ib_insync.Contract, timeout: float = 2.0) -> float:
+        """
+        Helper to fetch a near-immediate real-time price via streaming (non-snapshot).
+        """
+        price, _ = self.get_realtime_price(contract, timeout=timeout, use_snapshot=False)
+        return price
+
+    def submit_buy_market_order(self, order: dict, adaptive_algo_priority: str = None) -> ib_insync.Trade:
+        """
+        Place a simple market BUY order.
+        Expects `order` to contain:
+          • parsed_symbol
+          • qty
+        """
+        contract = self.create_contract(order['parsed_symbol'])
+        ib_order = Order(
+            action="BUY",
+            orderType="MKT",
+            totalQuantity=order['qty'],
+            account=self.account_number if self.account_number else None,
+        )
+        if adaptive_algo_priority:
+            ib_order.adaptivePriority = adaptive_algo_priority
+        trade = self.ib.placeOrder(contract, ib_order)
+        logging.info(f"[BUY] Market order placed for {contract.localSymbol} qty={order['qty']}")
+        return trade
+
+    def submit_sell_market_order(self, order: dict, adaptive_algo_priority: str = None) -> ib_insync.Trade:
+        """
+        Place a simple market SELL order.
+        Expects `order` to contain:
+          • parsed_symbol
+          • qty
+        """
+        contract = self.create_contract(order['parsed_symbol'])
+        ib_order = Order(
+            action="SELL",
+            orderType="MKT",
+            totalQuantity=order['qty'],
+            account=self.account_number if self.account_number else None,
+        )
+        if adaptive_algo_priority:
+            ib_order.adaptivePriority = adaptive_algo_priority
+        trade = self.ib.placeOrder(contract, ib_order)
+        logging.info(f"[SELL] Market order placed for {contract.localSymbol} qty={order['qty']}")
+        return trade
+
+    def submit_bracket_order_order(self, order: dict, adaptive_algo_priority: str = None) -> ib_insync.Trade:
+        """
+        Place a bracket order: market BUY with attached limit TP and stop-loss.
+        Expects `order` to contain:
+          • parsed_symbol, qty, tp (take-profit price), sl (stop-loss price)
+        """
+        contract = self.create_contract(order['parsed_symbol'])
+        parent = Order(
+            action="BUY",
+            orderType="MKT",
+            totalQuantity=order['qty'],
+            account=self.account_number if self.account_number else None,
+        )
+        if adaptive_algo_priority:
+            parent.adaptivePriority = adaptive_algo_priority
+        trade = self.ib.placeOrder(contract, parent)
+
+        # Attach TP and SL
+        take_profit = Order(
+            action="SELL",
+            orderType="LMT",
+            totalQuantity=order['qty'],
+            lmtPrice=order.get('tp'),
+            parentId=parent.orderId,
+            account=self.account_number if self.account_number else None,
+        )
+        stop_loss = Order(
+            action="SELL",
+            orderType="STP",
+            totalQuantity=order['qty'],
+            auxPrice=order.get('sl'),
+            parentId=parent.orderId,
+            account=self.account_number if self.account_number else None,
+        )
+        self.ib.placeOrder(contract, take_profit)
+        self.ib.placeOrder(contract, stop_loss)
+        logging.info(f"[BRACKET] Placed bracket order for {contract.localSymbol} qty={order['qty']}")
+        return trade
+
+    def submit_trailing_stop_order(self, order: dict) -> ib_insync.Trade:
+        """
+        Wrapper for native IB trailing stops.
+        """
+        return self.place_native_trail_stop(order)
+
+    # alias for unsubscribe
+    stop_stream = unsub_market_data
+
     def place_native_trail_stop(self, order: dict) -> ib_insync.Trade:
         """
         Place a native IB trailing-stop order.
         Expects `order` to contain:
-          • parsed_symbol (OptionSymbol or stock ticker)
-          • qty (int)
-          • trail_percent (float, in percentage points, e.g., 1.5 for 1.5%)
+          • parsed_symbol
+          • qty
+          • trail_percent
         """
-        # Build & qualify the contract
         contract = self.create_contract(order["parsed_symbol"])
-
-        # Convert percentage into decimal for IB API (IB expects a raw percent)
         trailing_percent = order.get("trail_percent", 1.5) / 100.0
-
         ib_order = Order(
             orderType="TRAIL",
             totalQuantity=order["qty"],
@@ -139,7 +216,6 @@ class IBInterface:
             tif="GTC",
             account=self.account_number if self.account_number else None,
         )
-
         trade = self.ib.placeOrder(contract, ib_order)
         logging.info(
             f"[TRAIL STOP] Placed TRAIL order on {contract.localSymbol} "
@@ -149,7 +225,7 @@ class IBInterface:
 
     def unsub_market_data(self, contract: ib_insync.Contract):
         """
-        Cancel any ongoing market data subscription for the given contract.
+        Cancel any ongoing market data subscription.
         """
         try:
             self.ib.cancelMktData(contract)
