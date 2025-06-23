@@ -1,50 +1,55 @@
 import pytest
-from datetime import datetime, timedelta
-from message_parsers import CommonParser
-from utils import get_business_day
+from freezegun import freeze_time
+from trailing_stop_manager import TrailingStopManager
 
-class DummyState:
-    msg_id = "12345"
+class DummyIB:
+    def __init__(self):
+        self.sell_calls = []
+        self.prices = []
 
-parser = CommonParser()
+    def get_live_price(self, contract):
+        # Return the next price in the list (or None if empty)
+        return self.prices.pop(0) if self.prices else None
 
-def make_msg(content, embeds=None, ts=None):
-    return {
-        "id": DummyState.msg_id,
-        "content": content,
-        "embeds": embeds or [],
-        "timestamp": ts or datetime.utcnow().isoformat()
-    }
+    def submit_sell_market_order(self, order):
+        self.sell_calls.append(order)
 
-@pytest.mark.parametrize("text, expected", [
-    # Basic
-    ("BTO AAPL 150C 06/20", {
-        "underlying": "AAPL", "exp_month": 6, "exp_day": 20,
-        "strike": 150.0, "p_or_c": "c", "instr": "BUY", "id": "12345"
-    }),
-    # Lowercase, “BUY” omitted (FORMAT_12_BUY=False)
-    ("AAPL 150p 07/15 BOT", {
-        "underlying": "AAPL", "exp_month": 7, "exp_day": 15,
-        "strike": 150.0, "p_or_c": "p", "instr": "BUY", "id": "12345"
-    }),
-    # Reject word
-    ("BTO SPY 400C 06/20 RISK", None),
-])
-def test_parse_simple(text, expected):
-    msg = make_msg(text)
-    result = parser.parse_message(parser, msg, state={"msg_id": msg["id"]})
-    if expected is None:
-        assert result is None or result == {}
-    else:
-        # only check the keys we care about
-        for k, v in expected.items():
-            assert result[k] == v
+class DummyContract:
+    symbol = "AAPL"
+    lastTradeDateOrContractMonth = "20250620"
+    strike = 150
+    right = "C"
 
-def test_parse_dte():
-    # e.g. 1DTE → tomorrow (skipping weekends)
-    today = datetime.today()
-    tomorrow = get_business_day(1)
-    msg = make_msg("BTO SPX 450C 1DTE")
-    out = parser.parse_message(parser, msg, state={"msg_id": msg["id"]})
-    assert out["exp_month"] == tomorrow.month
-    assert out["exp_day"] == tomorrow.day
+@pytest.fixture
+def manager(monkeypatch):
+    ib = DummyIB()
+    sent = []
+    # Patch Telegram notifier to capture messages instead of sending
+    monkeypatch.setattr("notification.send_telegram_message", lambda msg: sent.append(msg))
+    mgr = TrailingStopManager(ib_interface=ib, portfolio_state={})
+    return ib, mgr, sent
+
+def test_trailing_exit_after_pullback(manager):
+    ib, mgr, sent = manager
+    contract = DummyContract()
+    mgr.add_position("AAPL", contract, entry_price=100.0, qty=1)
+    # Simulate prices: hit BE, update high, then drop below high*(1-25%)
+    ib.prices = [105.1, 105.1, 104.0]
+    mgr.check_trailing_stops()  # breakeven flag
+    assert mgr.active_trails["AAPL"]["breakeven_hit"]
+    mgr.check_trailing_stops()
+    mgr.check_trailing_stops()
+    assert len(ib.sell_calls) == 1
+    assert any("Exited Trade: AAPL" in msg for msg in sent)
+
+@freeze_time("2025-06-20 09:30:00")
+def test_timeout_exit(manager):
+    ib, mgr, sent = manager
+    contract = DummyContract()
+    mgr.add_position("AAPL", contract, entry_price=100.0, qty=2)
+    ib.prices = [100, 100, 100]
+    # Advance clock past TIMEOUT_EXIT_MINUTES (1 minute by default)
+    with freeze_time("2025-06-20 09:32:00"):
+        mgr.check_trailing_stops()
+    assert len(ib.sell_calls) == 1
+    assert "Time-Based Exit" in sent[0]
