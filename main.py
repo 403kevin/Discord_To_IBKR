@@ -18,7 +18,6 @@ from decimal import Decimal
 from trailing_stop_manager import TrailingStopManager
 import threading
 from notification import send_telegram_message
-from datetime import datetime
 
 
 # =============================================================================================== #
@@ -59,7 +58,7 @@ class Main:
     def run(self):
         logging.info(f'Initiating worker loop... BEHOLD!!')
 
-        while 1:
+        while True:
             current_datetime = datetime.now()
             current_timestamp = int(current_datetime.timestamp())
 
@@ -221,13 +220,24 @@ class Main:
             self.ib_interface.ib.waitOnUpdate()
 
         logging.info(f'signal #{signal["id"]} market order filled')
+
+        # ── Telegram notification on entry ───────────────────────────────────
+        entry_msg = (
+            f"🟢 *Entered Trade*\n"
+            f"> Signal: {signal['instr']} {option_symbol}\n"
+            f"> Price: ${price:.2f}  Qty: {qty}\n"
+            f"> Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        send_telegram_message(entry_msg)
+        # ─────────────────────────────────────────────────────────────────
+
         self.qty_map[parsed_symbol.underlying_symbol] += qty
         self.current_state[parsed_symbol.underlying_symbol] = {
-    'option_symbol': option_symbol,
-    'logged_at': time.time(),
-    'msg_id': signal['id'],
-    'qty': qty
-}
+            'option_symbol': option_symbol,
+            'logged_at': time.time(),
+            'msg_id': signal['id'],
+            'qty': qty
+        }
 
         if config.TRAILING_STOP_ENABLED:
             if config.USE_ADVANCED_TRAILING:
@@ -276,11 +286,11 @@ class Main:
 
         if signal['instr'] == 'SELL':
             self.current_state[parsed_symbol.underlying_symbol] = {
-    'option_symbol': option_symbol,
-    'logged_at': time.time(),
-    'msg_id': signal['id'],
-    'qty': qty
-}
+                'option_symbol': option_symbol,
+                'logged_at': time.time(),
+                'msg_id': signal['id'],
+                'qty': qty
+            }
 
 # =============================================================================================== #
 
@@ -292,9 +302,11 @@ def read_last_signal_log_id() -> int:
         update_last_signal_log_id(0)
         return 0
 
+
 def update_last_signal_log_id(log_id: int):
     with open('last_log_id.json', 'w') as _file:
         json.dump({'last_log_id': int(log_id)}, _file)
+
 
 def current_dt() -> datetime:
     return datetime.utcnow().replace(tzinfo=timezone.utc)
@@ -310,5 +322,3 @@ if __name__ == '__main__':
     logging.info(f'===================================================================\n')
     main = Main()
     main.run()
-
-# =============================================================================================== #
